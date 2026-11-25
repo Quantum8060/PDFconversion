@@ -46,13 +46,13 @@ npm.cmd run dist:win
 
 ## GitHub Releasesによる更新確認
 
-package.json の以下を、実際のGitHubオーナー名・リポジトリ名に変更してください。
+package.json には、GitHubリポジトリ `Quantum8060/PDFconversion` が設定済みです。リポジトリを移転する場合は、以下を変更してください。
 
 - repository
 - build.publish の owner
 - build.publish の repo
 
-アプリは「アップデートを確認」操作時に最新Releaseを確認し、新しい版があればReleaseページをブラウザで開けます。更新ファイルのダウンロード・インストールは自動化しません。
+アプリは起動時と「アップデートを確認」操作時に最新Releaseを確認し、新しい版があればReleaseページをブラウザで開けます。更新ファイルのダウンロード・インストールは自動化しません。
 
 リリース時は、アプリのバージョンとGitHub Releaseのタグを合わせます。
 
