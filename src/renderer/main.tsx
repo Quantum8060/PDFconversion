@@ -5,6 +5,7 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import { BlobReader, BlobWriter, ZipWriter } from "@zip.js/zip.js";
 import type { AppSettings, OutputFormat, QualityPreset, OutputFile, UpdateInfo } from "../shared/types";
 import "./styles.css";
+import { extractPageImages } from "./extract-images";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 const presets: Record<QualityPreset, { label: string; scale: number; quality: number; help: string }> = {
@@ -60,6 +61,7 @@ function App() {
   const [error, setError] = useState<string>();
   const [passwordPrompt, setPasswordPrompt] = useState<PasswordPrompt>();
   const [overwritePath, setOverwritePath] = useState<string>();
+  const [extractedOutput, setExtractedOutput] = useState<{ target: string; file: OutputFile }>();
   const [lastOutput, setLastOutput] = useState<string>();
   const [update, setUpdate] = useState<UpdateInfo>();
   const [dragging, setDragging] = useState(false);
@@ -94,7 +96,7 @@ function App() {
     try {
       const source = await window.desktop.readPdf(path);
       const task = getDocument({ data: new Uint8Array(source.bytes) });
-      task.onPassword = (submit, reason) => setPasswordPrompt({ submit, invalid: reason === 2 });
+      task.onPassword = (submit: (password: string) => void, reason: number) => setPasswordPrompt({ submit, invalid: reason === 2 });
       const loaded = await task.promise;
       const info = { path, name: source.name, directory: source.directory };
       setPdf(loaded); setPdfInfo(info);
@@ -168,6 +170,41 @@ function App() {
   }
   async function retrySave() { if (!overwritePath) return; const old = overwritePath; setOverwritePath(undefined); const picked = await window.desktop.selectSavePath({ defaultPath: old, filters: [{ name: "出力ファイル", extensions: ["*"] }] }); if (picked) await performConversion(picked); }
 
+  async function saveExtracted(target: string, file: OutputFile, overwrite = false) {
+    const result = await window.desktop.saveOutput(target, file, overwrite);
+    if (result.status === "exists") { setExtractedOutput({ target, file }); return; }
+    setExtractedOutput(undefined); setLastOutput(target); setToast("画像の抽出が完了しました");
+  }
+  async function extractImages() {
+    if (!pdf || !pdfInfo || !selected.size) return;
+    const pages = [...selected].sort((a, b) => a - b);
+    const name = `${fileStem(pdfInfo.name)}-images.zip`;
+    const target = await window.desktop.selectSavePath({ defaultPath: `${pdfInfo.directory}\\${name}`, filters: [{ name: "ZIP", extensions: ["zip"] }] });
+    if (!target) return;
+    setError(undefined); setLastOutput(undefined); cancelRef.current = false;
+    setProgress({ percent: 0, label: "画像を抽出中…" });
+    try {
+      const images: { name: string; blob: Blob }[] = [];
+      for (let i = 0; i < pages.length; i++) {
+        if (cancelRef.current) throw new Error("__CANCELLED__");
+        const found = await extractPageImages(await pdf.getPage(pages[i]));
+        found.forEach((blob, index) => images.push({ name: `page-${String(pages[i]).padStart(2, "0")}-image-${String(index + 1).padStart(2, "0")}.png`, blob }));
+        setProgress({ percent: Math.round((i + 1) / pages.length * 90), label: `画像を抽出中：${i + 1} / ${pages.length}ページ` });
+      }
+      if (cancelRef.current) throw new Error("__CANCELLED__");
+      if (!images.length) { setToast("選択したページに抽出できる画像がありませんでした"); return; }
+      setProgress({ percent: 92, label: "ZIPファイルを作成中…" });
+      const writer = new ZipWriter(new BlobWriter("application/zip"));
+      for (const image of images) { if (cancelRef.current) throw new Error("__CANCELLED__"); await writer.add(image.name, new BlobReader(image.blob)); }
+      const zip = await writer.close();
+      if (cancelRef.current) throw new Error("__CANCELLED__");
+      await saveExtracted(target, { name, bytes: await zip.arrayBuffer() });
+    } catch (cause) {
+      if ((cause as Error).message === "__CANCELLED__") setToast("画像の抽出を中止しました。ファイルは保存されていません。");
+      else setError(cause instanceof Error ? cause.message : "画像の抽出に失敗しました");
+    } finally { setProgress(undefined); }
+  }
+
   return <main onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); const file = event.dataTransfer.files[0]; const droppedPath = file ? window.desktop.getPathForFile(file) : ""; if (droppedPath.toLowerCase().endsWith(".pdf")) openPath(droppedPath); else setError("PDFファイルをドロップしてください。"); }}>
     {progress && <div className="progress"><div className="progress-fill" style={{ width: `${progress.percent}%` }} /><span>{progress.label}（{progress.percent}%）</span><button onClick={() => { cancelRef.current = true; }}>中止</button></div>}
     <header><div className="brand">PDF Image Converter</div><div className="header-actions"><button className="quiet" onClick={() => window.desktop.checkUpdates().then((r) => r.available ? setUpdate(r) : setToast("現在のバージョンは最新です"))}>アップデートを確認</button><button onClick={choosePdf}>PDFを開く</button></div></header>
@@ -178,12 +215,14 @@ function App() {
         <fieldset><legend>出力形式</legend>{(Object.keys(formatLabels) as OutputFormat[]).map((format) => <label className="choice" key={format}><input type="radio" checked={settings.format === format} onChange={() => setSettings({ ...settings, format })}/>{formatLabels[format]}</label>)}</fieldset>
         <fieldset><legend>画質・解像度</legend>{(Object.keys(presets) as QualityPreset[]).map((preset) => <label className="choice" key={preset}><input type="radio" checked={settings.qualityPreset === preset} onChange={() => setSettings({ ...settings, qualityPreset: preset })}/>{presets[preset].label}<small>{presets[preset].help}</small></label>)}{settings.qualityPreset === "custom" && <div className="custom"><label>倍率<input type="number" min="0.5" max="6" step="0.1" value={settings.customScale} onChange={(e) => setSettings({ ...settings, customScale: Number(e.target.value) })}/></label>{settings.format !== "png" && settings.format !== "svg" && <label>画質<input type="number" min="1" max="100" value={Math.round(settings.imageQuality * 100)} onChange={(e) => setSettings({ ...settings, imageQuality: Number(e.target.value) / 100 })}/></label>}</div>}</fieldset>
         <div className="save-note">変換開始時に、元PDFと同じフォルダーを初期表示した「名前を付けて保存」画面が開きます。</div>
-        <div className="actions"><button className="primary" disabled={!selected.size || !!progress} onClick={() => convert()}>変換を開始</button></div>
+        <div className="actions"><button className="primary" disabled={!selected.size || !!progress} onClick={() => convert()}>変換を開始</button><button className="secondary" disabled={!selected.size || !!progress} onClick={extractImages}>画像だけを抽出</button></div>
+        <small>抽出では選択ページ内の画像をPNGとしてZIPに保存します。文字・図形や画像の配置は含まれません。</small>
         {lastOutput && <div className="result">変換完了 <button onClick={() => window.desktop.openFolder(lastOutput)}>出力フォルダーを開く</button></div>}
       </section></section>}
     {error && <div className="modal"><div className="dialog"><h2>エラー</h2><p>{error}</p><button onClick={() => setError(undefined)}>閉じる</button></div></div>}
     {passwordPrompt && <PasswordDialog invalid={passwordPrompt.invalid} onSubmit={(value) => { passwordPrompt.submit(value); setPasswordPrompt(undefined); }} />}
     {overwritePath && <div className="modal"><div className="dialog"><h2>同名のファイルがあります</h2><p>{overwritePath}</p><div className="dialog-actions"><button onClick={() => { const target = overwritePath; setOverwritePath(undefined); performConversion(target, true); }}>上書き</button><button onClick={retrySave}>再試行</button><button className="quiet" onClick={() => { setOverwritePath(undefined); setToast("出力をスキップしました"); }}>スキップ</button></div></div></div>}
+    {extractedOutput && <div className="modal"><div className="dialog"><h2>同名のファイルがあります</h2><p>{extractedOutput.target}</p><div className="dialog-actions"><button onClick={() => { saveExtracted(extractedOutput.target, extractedOutput.file, true).catch((cause) => setError(String(cause))); }}>上書き</button><button onClick={async () => { const picked = await window.desktop.selectSavePath({ defaultPath: extractedOutput.target, filters: [{ name: "ZIP", extensions: ["zip"] }] }); if (picked) await saveExtracted(picked, extractedOutput.file).catch((cause) => setError(String(cause))); }}>別の名前で保存</button><button className="quiet" onClick={() => setExtractedOutput(undefined)}>キャンセル</button></div></div></div>}
     {toast && <div className="toast">{toast}</div>}
   </main>;
 }

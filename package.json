@@ -1,6 +1,6 @@
 {
   "name": "pdf-image-converter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Windows desktop PDF to image converter",
   "main": "dist-electron/main/index.js",
   "author": "",
@@ -39,14 +39,25 @@
     "appId": "com.personal.pdfimageconverter",
     "productName": "PDF Image Converter",
     "icon": "assets/app-icon.ico",
-    "directories": { "output": "release" },
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "dist-renderer/**/*",
       "dist-electron/**/*",
       "assets/**/*",
       "package.json"
     ],
-    "win": { "target": [{ "target": "dir", "arch": ["x64"] }] },
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
     "publish": [
       {
         "provider": "github",
